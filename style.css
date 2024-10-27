@@ -1,0 +1,24 @@
+body{
+    background-image: linear-gradient(to right, #a6c1ee, #8bd6db);
+}
+
+.container{
+    width:1500px;
+    height: 930px;
+}
+.hello{
+    width: 1500px;
+    height:900px;
+    font-size: 1800%;
+    color: black;
+}
+.foot{
+    width: 1500px;
+    height: 30px;
+    text-align: center;
+}
+a,a:hover{
+    color: black;
+    text-decoration: none;
+    font-size: 100%;
+}
