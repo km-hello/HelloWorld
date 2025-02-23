@@ -1,5 +1,5 @@
 # 使用一个轻量级的Nginx镜像作为基础镜像
-FROM nginx:alpine-slim
+FROM nginx:stable-alpine-slim
 
 # 设置工作目录
 WORKDIR /usr/share/nginx/html
