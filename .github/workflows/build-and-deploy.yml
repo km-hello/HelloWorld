@@ -3,7 +3,7 @@ name: Build and Deploy Docker Image
 on:
   push:
     branches:
-      - master
+      - main
 
 jobs:
   # 编译和构建 Docker Image
@@ -19,20 +19,22 @@ jobs:
       - name: Log in to Docker registry
         uses: docker/login-action@v3
         with:
-          registry: ${{ vars.DOCKER_REGISTRY }}
+          registry: ${{ secrets.DOCKER_REGISTRY }}
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # 3. 构建 Docker 镜像
+      # 3. 构建 Docker 镜像 (使用 buildx 语法 )
       - name: Build Docker image
         run: |
-          docker build \
-            --cache-from=${{ vars.DOCKER_REGISTRY }}/hello-world:latest \
-            -t ${{ vars.DOCKER_REGISTRY }}/hello-world:latest .
+          docker buildx build \
+            --cache-from type=registry,ref=${{ secrets.DOCKER_REGISTRY }}/${{ secrets.DOCKER_USERNAME }}/hello-world:latest \
+            -t ${{ secrets.DOCKER_REGISTRY }}/${{ secrets.DOCKER_USERNAME }}/hello-world:latest \
+            --load \
+            .
 
       # 4. 推送 Docker 镜像
       - name: Push Docker image
-        run: docker push ${{ vars.DOCKER_REGISTRY }}/hello-world:latest
+        run: docker push ${{ secrets.DOCKER_REGISTRY }}/${{ secrets.DOCKER_USERNAME }}/hello-world:latest
 
   # 重新部署 Image
   deploy:
@@ -42,7 +44,7 @@ jobs:
     steps:
       # 5. 登录服务器重新部署
       - name: Executing remote ssh commands using private key
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.2
         with:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USERNAME }}
