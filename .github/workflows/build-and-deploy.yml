@@ -43,7 +43,7 @@ jobs:
 
     steps:
       # 5. 登录服务器重新部署
-      - name: Executing remote ssh commands using private key
+      - name: Executing remote ssh commands on txy server using private key
         uses: appleboy/ssh-action@v1.2.2
         with:
           host: ${{ secrets.TXY_HOST }}
