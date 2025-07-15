@@ -46,12 +46,12 @@ jobs:
       - name: Executing remote ssh commands using private key
         uses: appleboy/ssh-action@v1.2.2
         with:
-          host: ${{ secrets.HOST }}
-          port: ${{ secrets.PORT }}
-          username: ${{ secrets.USERNAME }}
-          key: ${{ secrets.KEY }}
+          host: ${{ secrets.TXY_HOST }}
+          port: ${{ secrets.TXY_PORT }}
+          username: ${{ secrets.TXY_USERNAME }}
+          key: ${{ secrets.TXY_KEY }}
           script: |
-            cd ${{ vars.PATH }}
+            cd ${{ vars.TXY_PATH }}
             sudo docker compose down
             sudo docker compose pull
             sudo docker compose up -d --remove-orphans
