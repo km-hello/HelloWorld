@@ -42,7 +42,7 @@ jobs:
     needs: build
 
     steps:
-      # 5. 登录服务器重新部署
+      # 5. 登录 TXY 服务器重新部署
       - name: Executing remote ssh commands on txy server using private key
         uses: appleboy/ssh-action@v1.2.2
         with:
@@ -56,7 +56,7 @@ jobs:
             sudo docker compose pull
             sudo docker compose up -d --remove-orphans
       
-      # 5. 登录GCP服务器重新部署
+      # 5. 登录 GCP 服务器重新部署
       - name: Executing remote ssh commands on gcp server using private key
         uses: appleboy/ssh-action@v1.2.2
         with:
@@ -66,6 +66,20 @@ jobs:
           key: ${{ secrets.GCP_KEY }}
           script: |
             cd ${{ vars.GCP_PATH }}
+            sudo docker compose down
+            sudo docker compose pull
+            sudo docker compose up -d --remove-orphans
+
+      # 5. 登录 ALY 服务器重新部署
+      - name: Executing remote ssh commands on aly server using private key
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.ALY_HOST }}
+          port: ${{ secrets.ALY_PORT }}
+          username: ${{ secrets.ALY_USERNAME }}
+          key: ${{ secrets.ALY_KEY }}
+          script: |
+            cd ${{ vars.ALY_PATH }}
             sudo docker compose down
             sudo docker compose pull
             sudo docker compose up -d --remove-orphans
