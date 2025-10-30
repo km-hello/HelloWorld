@@ -1,4 +1,5 @@
 body{
+    /* Set a gradient background for the body */
     background-image: linear-gradient(to right, #a6c1ee, #8bd6db);
 }
 
