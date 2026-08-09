@@ -8,7 +8,7 @@ WORKDIR /usr/share/nginx/html
 RUN rm -rf ./*
 
 # 复制项目文件到镜像中
-COPY index.html style.css ./
+COPY index.html style.css app.js physics.js favicon.svg ./
 
 # 暴露端口
 EXPOSE 80
