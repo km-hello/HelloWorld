@@ -1,10 +1,16 @@
 import { ThreeBodySystem } from "./physics.js";
+import {
+    getGlowScale,
+    getOffscreenOverflow,
+    getPositionScale,
+    MAX_RECOVERY_STALL_DURATION,
+    updateRecoveryTracking,
+} from "./viewport.js";
 
 const BODY_COUNT = 3;
 const FIXED_TIME_STEP = 1 / 120;
 const MAX_FRAME_DELTA = 0.05;
 const MAX_SUBSTEPS = 6;
-const WORLD_VERTICAL_SPAN = 4;
 const CAMERA_DISTANCE = 6;
 const VISUAL_DEPTH_GAIN = 2.35;
 const MIN_PERSPECTIVE = 0.58;
@@ -202,6 +208,8 @@ export class ThreeBodyBackground {
         this.projectedRadius = new Float64Array(BODY_COUNT);
         this.projectedDepthIntensity = new Float64Array(BODY_COUNT);
         this.offscreenDuration = new Float64Array(BODY_COUNT);
+        this.recoveryStallDuration = new Float64Array(BODY_COUNT);
+        this.previousOffscreenOverflow = new Float64Array(BODY_COUNT);
         this.trailPositions = new Float64Array(
             BODY_COUNT * TRAIL_POINT_CAPACITY * TRAIL_AXES,
         );
@@ -211,6 +219,8 @@ export class ThreeBodyBackground {
 
         this.cssWidth = 0;
         this.cssHeight = 0;
+        this.positionScale = 1;
+        this.glowScale = 1;
         this.pixelRatio = 1;
         this.spritePixelRatio = 0;
         this.accumulator = 0;
@@ -321,6 +331,7 @@ export class ThreeBodyBackground {
     _resizeCanvas() {
         const width = Math.max(1, document.documentElement.clientWidth || window.innerWidth);
         const height = Math.max(1, window.innerHeight || document.documentElement.clientHeight);
+        const dimensionsChanged = width !== this.cssWidth || height !== this.cssHeight;
         const devicePixelRatio = window.devicePixelRatio || 1;
         const isConstrainedDevice =
             width < 720
@@ -332,8 +343,14 @@ export class ThreeBodyBackground {
 
         this.cssWidth = width;
         this.cssHeight = height;
+        this.positionScale = getPositionScale(width, height);
+        this.glowScale = getGlowScale(width, height);
         this.pixelRatio = pixelRatio;
         this.resizePending = false;
+
+        if (dimensionsChanged) {
+            this._resetRecoveryTracking();
+        }
 
         if (this.canvas.width !== backingWidth || this.canvas.height !== backingHeight) {
             this.canvas.width = backingWidth;
@@ -444,7 +461,7 @@ export class ThreeBodyBackground {
         if (!stateIsSafe) {
             this.sceneOpacity = 0;
             this.transitionPhase = 2;
-            this.offscreenDuration.fill(0);
+            this._resetRecoveryTracking();
             this._clearTrails();
             this._recordTrailPoint();
         }
@@ -464,7 +481,7 @@ export class ThreeBodyBackground {
 
             if (this.sceneOpacity === 0) {
                 this.system.reset();
-                this.offscreenDuration.fill(0);
+                this._resetRecoveryTracking();
                 this._clearTrails();
                 this._recordTrailPoint();
                 this.transitionPhase = 2;
@@ -480,7 +497,6 @@ export class ThreeBodyBackground {
 
     _projectBodies() {
         const positions = this.system.positions;
-        const worldScale = this.cssHeight / WORLD_VERTICAL_SPAN;
         const centerX = this.cssWidth / 2;
         const centerY = this.cssHeight / 2;
 
@@ -492,11 +508,11 @@ export class ThreeBodyBackground {
             const perspective = getVisualPerspective(positionZ);
             const depthIntensity = getDepthIntensity(perspective);
 
-            this.projectedX[body] = centerX + positionX * worldScale * perspective;
-            this.projectedY[body] = centerY - positionY * worldScale * perspective;
+            this.projectedX[body] = centerX + positionX * this.positionScale * perspective;
+            this.projectedY[body] = centerY - positionY * this.positionScale * perspective;
             this.projectedDepth[body] = positionZ;
             this.projectedRadius[body] = clamp(
-                worldScale
+                this.glowScale
                 * 0.55
                 * perspective
                 * (0.82 + 0.38 * depthIntensity),
@@ -546,10 +562,19 @@ export class ThreeBodyBackground {
         this.trailSampleAccumulator = 0;
     }
 
+    _resetRecoveryTracking() {
+        this.offscreenDuration.fill(0);
+        this.recoveryStallDuration.fill(0);
+        this.previousOffscreenOverflow.fill(0);
+
+        for (let body = 0; body < BODY_COUNT; body += 1) {
+            this.system.setRecoveryUrgency(body, 0);
+        }
+    }
+
     _updateOffscreenRecovery(frameDelta) {
         const margin = Math.min(this.cssWidth, this.cssHeight) * 0.15;
         const positions = this.system.positions;
-        const worldScale = this.cssHeight / WORLD_VERTICAL_SPAN;
         const centerX = this.cssWidth / 2;
         const centerY = this.cssHeight / 2;
 
@@ -562,11 +587,11 @@ export class ThreeBodyBackground {
                 MAX_RECOVERY_PERSPECTIVE,
             );
             const projectedX =
-                centerX + positions[offset] * worldScale * perspective;
+                centerX + positions[offset] * this.positionScale * perspective;
             const projectedY =
-                centerY - positions[offset + 1] * worldScale * perspective;
+                centerY - positions[offset + 1] * this.positionScale * perspective;
             const recoveryRadius = clamp(
-                worldScale
+                this.glowScale
                 * 0.54
                 * perspective
                 * (0.86 + 0.3 * depthIntensity),
@@ -574,25 +599,28 @@ export class ThreeBodyBackground {
                 MAX_RECOVERY_GLOW_RADIUS,
             );
             const coreRadius = recoveryRadius * 0.16;
-            const isOffscreen =
-                projectedX + coreRadius < -margin
-                || projectedX - coreRadius > this.cssWidth + margin
-                || projectedY + coreRadius < -margin
-                || projectedY - coreRadius > this.cssHeight + margin;
-
-            if (isOffscreen) {
-                this.offscreenDuration[body] += frameDelta;
-            } else {
-                this.offscreenDuration[body] = Math.max(
-                    0,
-                    this.offscreenDuration[body] - frameDelta * 4,
-                );
-            }
-
-            const urgency = smoothstep((this.offscreenDuration[body] - 6) / 2);
+            const overflow = getOffscreenOverflow(
+                projectedX,
+                projectedY,
+                coreRadius,
+                this.cssWidth,
+                this.cssHeight,
+                margin,
+            );
+            const urgency = updateRecoveryTracking(
+                this.offscreenDuration,
+                this.recoveryStallDuration,
+                this.previousOffscreenOverflow,
+                body,
+                overflow,
+                frameDelta,
+            );
             this.system.setRecoveryUrgency(body, urgency);
 
-            if (this.offscreenDuration[body] >= 12 && this.transitionPhase === 0) {
+            if (
+                this.recoveryStallDuration[body] >= MAX_RECOVERY_STALL_DURATION
+                && this.transitionPhase === 0
+            ) {
                 this.transitionPhase = 1;
             }
         }
@@ -648,7 +676,6 @@ export class ThreeBodyBackground {
         }
 
         const context = this.context;
-        const worldScale = this.cssHeight / WORLD_VERTICAL_SPAN;
         const centerX = this.cssWidth / 2;
         const centerY = this.cssHeight / 2;
         const oldestPoint =
@@ -669,8 +696,8 @@ export class ThreeBodyBackground {
             const positionZ = this.trailPositions[trailOffset + 2];
             const perspective = getVisualPerspective(positionZ);
             const depthIntensity = getDepthIntensity(perspective);
-            const projectedX = centerX + positionX * worldScale * perspective;
-            const projectedY = centerY - positionY * worldScale * perspective;
+            const projectedX = centerX + positionX * this.positionScale * perspective;
+            const projectedY = centerY - positionY * this.positionScale * perspective;
 
             if (point > 0) {
                 const ageProgress = point / (trailLength - 1);

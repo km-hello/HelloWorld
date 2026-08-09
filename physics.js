@@ -29,6 +29,7 @@ export const DEFAULT_PHYSICS_CONFIG = Object.freeze({
     restoreStiffness: 1.5,
     maxRestoreAcceleration: 4.5,
     boundaryDamping: 0,
+    recoveryOutwardSpeed: 0.25,
     maxAcceleration: 18,
     softSpeedLimit: 3.2,
     hardSpeedLimit: 6,
@@ -283,6 +284,7 @@ export class ThreeBodySystem {
             restoreStiffness,
             maxRestoreAcceleration,
             boundaryDamping,
+            recoveryOutwardSpeed,
             maxAcceleration,
         } = this.config;
         const softenedDistanceSquared = softening * softening;
@@ -337,7 +339,18 @@ export class ThreeBodySystem {
             const positionY = this.positions[offset + 1];
             const positionZ = this.positions[offset + 2];
             const radius = Math.hypot(positionX, positionY, positionZ);
-            const urgency = this._recoveryUrgencies[body];
+            const inverseRadius = radius > 0 ? 1 / radius : 0;
+            const directionX = positionX * inverseRadius;
+            const directionY = positionY * inverseRadius;
+            const directionZ = positionZ * inverseRadius;
+            const radialVelocity =
+                this.velocities[offset] * directionX
+                + this.velocities[offset + 1] * directionY
+                + this.velocities[offset + 2] * directionZ;
+            const outwardProgress = smoothstep(
+                radialVelocity / Math.max(recoveryOutwardSpeed, Number.EPSILON),
+            );
+            const urgency = this._recoveryUrgencies[body] * outwardProgress;
             const effectiveStart = boundaryStart * (1 - 0.65 * urgency);
             const effectiveFull = Math.max(
                 effectiveStart + 0.01,
@@ -356,14 +369,6 @@ export class ThreeBodySystem {
                         * boundaryProgress
                         * recoveryMultiplier,
                 );
-                const inverseRadius = 1 / radius;
-                const directionX = positionX * inverseRadius;
-                const directionY = positionY * inverseRadius;
-                const directionZ = positionZ * inverseRadius;
-                const radialVelocity =
-                    this.velocities[offset] * directionX
-                    + this.velocities[offset + 1] * directionY
-                    + this.velocities[offset + 2] * directionZ;
                 const outwardDamping = radialVelocity > 0
                     ? boundaryDamping * boundaryProgress * radialVelocity * recoveryMultiplier
                     : 0;

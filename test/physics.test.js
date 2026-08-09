@@ -91,21 +91,44 @@ test("soft boundary is inactive in the core and pulls inward outside it", () => 
     assert.equal(system.accelerations[2], 0);
 });
 
-test("offscreen urgency activates an earlier and stronger recovery field", () => {
+test("offscreen urgency adds recovery only while a body moves outward", () => {
     const system = new ThreeBodySystem({ gravityConstant: 0 });
     const positions = [
         1.5, 0, 0,
         0, 0, 0,
         0, 0, 0,
     ];
-    const velocities = new Float64Array(9);
+    const outwardVelocities = [
+        1, 0, 0,
+        0, 0, 0,
+        0, 0, 0,
+    ];
 
-    system.setState(positions, velocities);
+    system.setState(positions, outwardVelocities);
     assert.equal(system.accelerations[0], 0);
 
     system.setRecoveryUrgency(0, 1);
-    system.setState(positions, velocities);
+    system.setState(positions, outwardVelocities);
     assert.ok(system.accelerations[0] < 0);
+
+    const boundaryPositions = [
+        3.5, 0, 0,
+        0, 0, 0,
+        0, 0, 0,
+    ];
+    const inwardVelocities = [
+        -1, 0, 0,
+        0, 0, 0,
+        0, 0, 0,
+    ];
+
+    system.setRecoveryUrgency(0, 0);
+    system.setState(boundaryPositions, inwardVelocities);
+    const baseRecovery = system.accelerations[0];
+
+    system.setRecoveryUrgency(0, 1);
+    system.setState(boundaryPositions, inwardVelocities);
+    assert.equal(system.accelerations[0], baseRecovery);
 });
 
 test("a body moving outward beyond the boundary returns within eight seconds", () => {
