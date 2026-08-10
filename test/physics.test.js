@@ -22,6 +22,44 @@ function weightedVectorSum(vectors, masses) {
     return result;
 }
 
+function getNewtonianEnergy(system, gravityConstant) {
+    let energy = 0;
+
+    for (let first = 0; first < system.masses.length; first += 1) {
+        const firstOffset = first * 3;
+        const firstMass = system.masses[first];
+        const speedSquared =
+            system.velocities[firstOffset] ** 2
+            + system.velocities[firstOffset + 1] ** 2
+            + system.velocities[firstOffset + 2] ** 2;
+
+        energy += 0.5 * firstMass * speedSquared;
+
+        for (
+            let second = first + 1;
+            second < system.masses.length;
+            second += 1
+        ) {
+            const secondOffset = second * 3;
+            const separation = Math.hypot(
+                system.positions[secondOffset] - system.positions[firstOffset],
+                system.positions[secondOffset + 1]
+                    - system.positions[firstOffset + 1],
+                system.positions[secondOffset + 2]
+                    - system.positions[firstOffset + 2],
+            );
+
+            energy -=
+                gravityConstant
+                * firstMass
+                * system.masses[second]
+                / separation;
+        }
+    }
+
+    return energy;
+}
+
 test("initial state has no center-of-mass drift or net momentum", () => {
     const system = new ThreeBodySystem();
     const weightedPosition = weightedVectorSum(system.positions, system.masses);
@@ -44,6 +82,74 @@ test("fixed-step simulation is deterministic", () => {
     assert.deepEqual(first.positions, second.positions);
     assert.deepEqual(first.velocities, second.velocities);
     assert.equal(first.resetCount, second.resetCount);
+});
+
+test("unconstrained figure-eight conserves energy, momentum, and center of mass", () => {
+    const gravityConstant = 1;
+    const system = new ThreeBodySystem({
+        gravityConstant,
+        softening: 0,
+        coreRadius: 0,
+        coreRepulsion: 0,
+        boundaryStart: 100,
+        boundaryFull: 101,
+        restoreStiffness: 0,
+        maxRestoreAcceleration: 0,
+        maxAcceleration: 1_000_000,
+        softSpeedLimit: 100,
+        hardSpeedLimit: 100,
+        binaryCaptureDistance: 0,
+        binaryCaptureDuration: 1_000_000,
+        failSafeRadius: 200,
+    });
+
+    system.setState([
+        -0.97000436, 0.24308753, 0,
+        0.97000436, -0.24308753, 0,
+        0, 0, 0,
+    ], [
+        0.466203685, 0.43236573, 0,
+        0.466203685, 0.43236573, 0,
+        -0.93240737, -0.86473146, 0,
+    ], true);
+
+    const initialEnergy = getNewtonianEnergy(system, gravityConstant);
+    let maximumRelativeEnergyDrift = 0;
+    let maximumMomentum = 0;
+    let maximumCenterOfMassOffset = 0;
+    const figureEightPeriod = 6.3259;
+    const steps = Math.round((figureEightPeriod * 10) / FIXED_STEP);
+
+    for (let step = 0; step < steps; step += 1) {
+        system.step(FIXED_STEP);
+
+        const energy = getNewtonianEnergy(system, gravityConstant);
+        const momentum = weightedVectorSum(system.velocities, system.masses);
+        const weightedPosition = weightedVectorSum(system.positions, system.masses);
+        const totalMass = system.masses.reduce((sum, mass) => sum + mass, 0);
+
+        maximumRelativeEnergyDrift = Math.max(
+            maximumRelativeEnergyDrift,
+            Math.abs((energy - initialEnergy) / initialEnergy),
+        );
+        maximumMomentum = Math.max(maximumMomentum, Math.hypot(...momentum));
+        maximumCenterOfMassOffset = Math.max(
+            maximumCenterOfMassOffset,
+            Math.hypot(...weightedPosition) / totalMass,
+        );
+    }
+
+    assert.ok(
+        maximumRelativeEnergyDrift < 1e-4,
+        `unexpected relative energy drift: ${maximumRelativeEnergyDrift}`,
+    );
+    assert.ok(maximumMomentum < 1e-12, `unexpected momentum: ${maximumMomentum}`);
+    assert.ok(
+        maximumCenterOfMassOffset < 1e-12,
+        `unexpected center-of-mass drift: ${maximumCenterOfMassOffset}`,
+    );
+    assert.equal(system.resetCount, 1);
+    assert.equal(system.binaryInterventionCount, 0);
 });
 
 test("default trajectory reaches the outer activity region", () => {
