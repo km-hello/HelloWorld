@@ -1,17 +1,17 @@
-# 使用一个轻量级的Nginx镜像作为基础镜像
+FROM node:24-alpine AS build
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+
+COPY . .
+RUN npm run build
+
 FROM nginx:stable-alpine-slim
 
-# 设置工作目录
-WORKDIR /usr/share/nginx/html
+COPY --from=build /app/dist /usr/share/nginx/html
 
-# 删除自带的默认文件
-RUN rm -rf ./*
-
-# 复制项目文件到镜像中
-COPY index.html style.css app.js physics.js viewport.js favicon.svg ./
-
-# 暴露端口
 EXPOSE 80
 
-# 启动Nginx
 CMD ["nginx", "-g", "daemon off;"]

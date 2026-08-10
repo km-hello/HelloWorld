@@ -1,0 +1,9 @@
+.git
+.agents
+.codex
+.playwright-cli
+node_modules
+dist
+design
+design-qa.md
+*.log
