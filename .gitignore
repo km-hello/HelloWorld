@@ -13,6 +13,10 @@
 /cypress/videos/
 /cypress/screenshots/
 
+# Generated visual QA artifacts
+/design/
+/design-qa.md
+
 # Tool-generated local state
 /.agents/
 /.codex/
