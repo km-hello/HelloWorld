@@ -29,8 +29,11 @@ import { FontLoader } from "three/addons/loaders/FontLoader.js";
 import { ThreeBodySystem } from "./physics.js";
 import {
     getGlowScale,
+    getNearCameraFade,
     getOffscreenOverflow,
     getPositionScale,
+    getVisualPerspective,
+    getVisualZ,
     MAX_RECOVERY_STALL_DURATION,
     updateRecoveryTracking,
 } from "./viewport.js";
@@ -42,11 +45,12 @@ const MAX_FRAME_DELTA = 0.05;
 const MAX_SUBSTEPS = 6;
 const CAMERA_DISTANCE = 6;
 const CAMERA_FOV = 42;
-// Rendering-only depth exaggeration. Physics and offscreen recovery keep their
-// own coordinates and projection constants below.
-const VISUAL_DEPTH_GAIN = 3.1;
-const MIN_PERSPECTIVE = 0.44;
-const MAX_PERSPECTIVE = 2.18;
+const CAMERA_NEAR_DISTANCE = 0.05;
+const CAMERA_FADE_FULL_OPACITY_DISTANCE = 0.45;
+// These bounds only shape glow intensity and core ratio. Main-camera position
+// and apparent size are intentionally not clamped.
+const FAR_STYLE_PERSPECTIVE = 0.44;
+const FULL_STYLE_PERSPECTIVE = 2.18;
 const RECOVERY_DEPTH_GAIN = 2.1;
 const MIN_RECOVERY_PERSPECTIVE = 0.65;
 const MAX_RECOVERY_PERSPECTIVE = 1.62;
@@ -60,6 +64,8 @@ const MONUMENT_PITCH = -0.11;
 const MONUMENT_YAW = -0.14;
 const DESKTOP_REFLECTION_SIZE = 64;
 const CONSTRAINED_REFLECTION_SIZE = 64;
+const DESKTOP_REFLECTION_STRIDE = 2;
+const CONSTRAINED_REFLECTION_STRIDE = 3;
 const REFLECTION_MAX_ANGULAR_RADIUS = Math.PI / 24;
 const REFLECTION_NEAR_FADE_START = 0.1;
 const REFLECTION_NEAR_FADE_END = 0.42;
@@ -160,15 +166,6 @@ function getPerspective(positionZ, depthGain, minimum, maximum) {
     );
 }
 
-function getVisualPerspective(positionZ) {
-    return getPerspective(
-        positionZ,
-        VISUAL_DEPTH_GAIN,
-        MIN_PERSPECTIVE,
-        MAX_PERSPECTIVE,
-    );
-}
-
 function getRecoveryPerspective(positionZ) {
     return getPerspective(
         positionZ,
@@ -180,15 +177,10 @@ function getRecoveryPerspective(positionZ) {
 
 function getDepthIntensity(
     perspective,
-    minimum = MIN_PERSPECTIVE,
-    maximum = MAX_PERSPECTIVE,
+    minimum = FAR_STYLE_PERSPECTIVE,
+    maximum = FULL_STYLE_PERSPECTIVE,
 ) {
     return smoothstep((perspective - minimum) / (maximum - minimum));
-}
-
-function getVisualZ(positionZ) {
-    const perspective = getVisualPerspective(positionZ);
-    return CAMERA_DISTANCE - CAMERA_DISTANCE / perspective;
 }
 
 function createRadialTexture(stops) {
@@ -250,7 +242,7 @@ export class MirrorMonumentScene {
         this.camera = new PerspectiveCamera(
             CAMERA_FOV,
             1,
-            0.05,
+            CAMERA_NEAR_DISTANCE,
             60,
         );
         this.camera.position.set(0, 0, CAMERA_DISTANCE);
@@ -269,9 +261,8 @@ export class MirrorMonumentScene {
         this.reflectionTarget = null;
         this.cubeCamera = null;
         this.reflectionSize = 0;
-        this.reflectionStride = 1;
+        this.reflectionStride = DESKTOP_REFLECTION_STRIDE;
         this.reflectionFrame = 0;
-        this.reflectionUpdates = 0;
 
         this.cssWidth = 0;
         this.cssHeight = 0;
@@ -292,6 +283,7 @@ export class MirrorMonumentScene {
         this.animationFrameId = null;
         this.sceneOpacity = 1;
         this.transitionPhase = 0;
+        this.starting = false;
         this.started = false;
         this.destroyed = false;
         this.manuallyPaused = false;
@@ -323,23 +315,34 @@ export class MirrorMonumentScene {
     }
 
     async start() {
-        if (this.destroyed || this.started) {
+        if (this.destroyed || this.started || this.starting) {
             return;
         }
 
-        this._resize();
-        this._createBodies();
-        await this._createMonument();
-        this._resetTrails();
-        this._updateBodyVisuals();
-        this._updateTrailGeometry();
-        this._updateDynamicReflection();
-        this._render();
+        this.starting = true;
 
-        this.started = true;
-        this.canvas.dataset.renderingMode = "webgl-mirror";
-        document.body.classList.add("scene-ready");
-        this._syncAnimationState();
+        try {
+            this._resize();
+            this._createBodies();
+            const monumentCreated = await this._createMonument();
+
+            if (!monumentCreated || this.destroyed) {
+                return;
+            }
+
+            this._resetTrails();
+            this._updateBodyVisuals();
+            this._updateTrailGeometry();
+            this._updateDynamicReflection();
+            this._render();
+
+            this.started = true;
+            this.canvas.dataset.renderingMode = "webgl-mirror";
+            document.body.classList.add("scene-ready");
+            this._syncAnimationState();
+        } finally {
+            this.starting = false;
+        }
     }
 
     pause() {
@@ -370,13 +373,21 @@ export class MirrorMonumentScene {
 
         if (this.resizeObserver) {
             this.resizeObserver.disconnect();
+            this.resizeObserver = null;
         }
+
+        const dfgLut = this.mirrorMaterials
+            .map((material) => (
+                this.renderer.properties.get(material).uniforms?.dfgLUT?.value
+            ))
+            .find((texture) => texture?.isDataTexture);
 
         this.textGeometry?.dispose();
         for (const texture of this.spriteTextures) {
             texture.dispose();
         }
         this.reflectionTarget?.dispose();
+        const spriteGeometry = this.bodyVisuals[0]?.halo.geometry;
 
         for (const material of this.mirrorMaterials) {
             material.dispose();
@@ -391,7 +402,34 @@ export class MirrorMonumentScene {
             visual.geometry.dispose();
             visual.material.dispose();
         }
+
+        // Three.js shares one module-level geometry across every Sprite. Its
+        // renderer-specific dispose listener otherwise keeps a destroyed
+        // WebGLRenderer and canvas reachable after renderer.dispose().
+        spriteGeometry?.dispose();
+
+        // MeshPhysicalMaterial uses Three.js's module-level DFG lookup
+        // texture. WebGLRenderer.dispose() does not unregister the renderer's
+        // listener from that shared texture, so dispatch its dispose event as
+        // part of teardown. Any other live renderer uploads the tiny LUT again
+        // on its next draw.
+        dfgLut?.dispose();
+
+        this.scene.clear();
+        this.bodyVisuals.length = 0;
+        this.trailVisuals.length = 0;
+        this.trailHistory.length = 0;
+        this.mirrorMaterials.length = 0;
+        this.spriteTextures.length = 0;
+        this.textGeometry = null;
+        this.textMesh = null;
+        this.reflectionTarget = null;
+        this.cubeCamera = null;
+        this.reflectionSize = 0;
         this.renderer.dispose();
+        if (this.renderer.extensions.has("WEBGL_lose_context")) {
+            this.renderer.forceContextLoss();
+        }
         this.canvas.dataset.simulationState = "destroyed";
     }
 
@@ -465,6 +503,7 @@ export class MirrorMonumentScene {
                 reflectionCore,
                 reflectionHalo,
                 pointLight,
+                mainVisible: true,
             });
             this.spriteTextures.push(haloTexture, coreTexture);
 
@@ -520,6 +559,11 @@ export class MirrorMonumentScene {
             import.meta.url,
         );
         const font = await new FontLoader().loadAsync(fontUrl.href);
+
+        if (this.destroyed) {
+            return false;
+        }
+
         const geometry = new TextGeometry(TEXT_CONTENT, {
             font,
             size: 1,
@@ -575,6 +619,7 @@ export class MirrorMonumentScene {
         this.scene.add(this.textMesh);
         this._resizeMonument();
         this._ensureReflectionTarget();
+        return true;
     }
 
     _ensureReflectionTarget() {
@@ -585,7 +630,9 @@ export class MirrorMonumentScene {
             ? CONSTRAINED_REFLECTION_SIZE
             : DESKTOP_REFLECTION_SIZE;
 
-        this.reflectionStride = isConstrained ? 2 : 1;
+        this.reflectionStride = isConstrained
+            ? CONSTRAINED_REFLECTION_STRIDE
+            : DESKTOP_REFLECTION_STRIDE;
 
         if (this.reflectionTarget && desiredSize === this.reflectionSize) {
             for (const material of this.mirrorMaterials) {
@@ -676,7 +723,11 @@ export class MirrorMonumentScene {
         this.camera.aspect = width / height;
         this.camera.updateProjectionMatrix();
         this._resizeMonument();
-        this._ensureReflectionTarget();
+
+        if (this.textMesh) {
+            this._ensureReflectionTarget();
+        }
+
         this._resetRecoveryTracking();
     }
 
@@ -807,6 +858,10 @@ export class MirrorMonumentScene {
     }
 
     _advanceResetTransition(frameDelta) {
+        if (this.transitionPhase === 0) {
+            return;
+        }
+
         if (this.transitionPhase === 1) {
             this.sceneOpacity = Math.max(0, this.sceneOpacity - frameDelta / 0.25);
 
@@ -835,22 +890,33 @@ export class MirrorMonumentScene {
             const positionZ = positions[offset + 2];
             const perspective = getVisualPerspective(positionZ);
             const depthIntensity = getDepthIntensity(perspective);
+            const cameraFade = getNearCameraFade(
+                positionZ,
+                CAMERA_DISTANCE,
+                CAMERA_NEAR_DISTANCE,
+                CAMERA_FADE_FULL_OPACITY_DISTANCE,
+            );
             const diameter =
                 this.glowWorldDiameter * (0.58 + 0.82 * depthIntensity);
             const visual = this.bodyVisuals[body];
+            const haloOpacity =
+                FAR_HALO_OPACITY + (0.95 - FAR_HALO_OPACITY) * depthIntensity;
+            const coreOpacity =
+                FAR_CORE_OPACITY + (1 - FAR_CORE_OPACITY) * depthIntensity;
 
             visual.group.position.set(
                 positions[offset] * this.positionWorldScale,
                 positions[offset + 1] * this.positionWorldScale,
-                getVisualZ(positionZ),
+                getVisualZ(positionZ, CAMERA_DISTANCE),
             );
             visual.halo.scale.set(diameter, diameter, 1);
-            visual.halo.material.opacity =
-                FAR_HALO_OPACITY + (0.95 - FAR_HALO_OPACITY) * depthIntensity;
+            visual.halo.material.opacity = haloOpacity * cameraFade;
             const coreDiameter = diameter * (0.27 + 0.12 * depthIntensity);
             visual.core.scale.set(coreDiameter, coreDiameter, 1);
-            visual.core.material.opacity =
-                FAR_CORE_OPACITY + (1 - FAR_CORE_OPACITY) * depthIntensity;
+            visual.core.material.opacity = coreOpacity * cameraFade;
+            visual.mainVisible = cameraFade > 0;
+            visual.halo.visible = visual.mainVisible;
+            visual.core.visible = visual.mainVisible;
 
             const reflectionDistance = this.cubeCamera
                 ? visual.group.position.distanceTo(this.cubeCamera.position)
@@ -877,7 +943,7 @@ export class MirrorMonumentScene {
                 1,
             );
             visual.reflectionHalo.material.opacity =
-                visual.halo.material.opacity
+                haloOpacity
                 * REFLECTION_HALO_OPACITY_SCALE
                 * reflectionNearFade;
             const reflectionCoreDiameter =
@@ -888,7 +954,7 @@ export class MirrorMonumentScene {
                 1,
             );
             visual.reflectionCore.material.opacity =
-                visual.core.material.opacity
+                coreOpacity
                 * REFLECTION_CORE_OPACITY_SCALE
                 * reflectionNearFade;
             visual.pointLight.intensity = BODY_STYLES[body].lightIntensity;
@@ -953,11 +1019,13 @@ export class MirrorMonumentScene {
 
                 output[offset] = history[offset] * this.positionWorldScale;
                 output[offset + 1] = history[offset + 1] * this.positionWorldScale;
-                output[offset + 2] = getVisualZ(history[offset + 2]);
+                output[offset + 2] = getVisualZ(
+                    history[offset + 2],
+                    CAMERA_DISTANCE,
+                );
             }
 
             attribute.needsUpdate = true;
-            this.trailVisuals[body].geometry.computeBoundingSphere();
         }
     }
 
@@ -986,15 +1054,12 @@ export class MirrorMonumentScene {
             this.textMesh.visible = true;
 
             for (const visual of this.bodyVisuals) {
-                visual.halo.visible = true;
-                visual.core.visible = true;
+                visual.halo.visible = visual.mainVisible;
+                visual.core.visible = visual.mainVisible;
                 visual.reflectionHalo.visible = false;
                 visual.reflectionCore.visible = false;
             }
         }
-
-        this.reflectionUpdates += 1;
-        this.canvas.dataset.reflectionUpdates = String(this.reflectionUpdates);
     }
 
     _render() {
