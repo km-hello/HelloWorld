@@ -1,3 +1,31 @@
+import {
+    ACESFilmicToneMapping,
+    AdditiveBlending,
+    BufferAttribute,
+    BufferGeometry,
+    CanvasTexture,
+    Color,
+    CubeCamera,
+    DynamicDrawUsage,
+    LinearFilter,
+    LinearMipmapLinearFilter,
+    Line,
+    LineBasicMaterial,
+    Mesh,
+    MeshPhysicalMaterial,
+    Object3D,
+    PerspectiveCamera,
+    PointLight,
+    Scene,
+    Sprite,
+    SpriteMaterial,
+    SRGBColorSpace,
+    WebGLCubeRenderTarget,
+    WebGLRenderer,
+} from "three";
+import { TextGeometry } from "three/addons/geometries/TextGeometry.js";
+import { FontLoader } from "three/addons/loaders/FontLoader.js";
+
 import { ThreeBodySystem } from "./physics.js";
 import {
     getGlowScale,
@@ -8,28 +36,43 @@ import {
 } from "./viewport.js";
 
 const BODY_COUNT = 3;
+const AXIS_COUNT = 3;
 const FIXED_TIME_STEP = 1 / 120;
 const MAX_FRAME_DELTA = 0.05;
 const MAX_SUBSTEPS = 6;
 const CAMERA_DISTANCE = 6;
-const VISUAL_DEPTH_GAIN = 2.35;
-const MIN_PERSPECTIVE = 0.58;
-const MAX_PERSPECTIVE = 1.78;
-// Keep recovery sensing stable when the artistic projection is tuned.
+const CAMERA_FOV = 42;
+// Rendering-only depth exaggeration. Physics and offscreen recovery keep their
+// own coordinates and projection constants below.
+const VISUAL_DEPTH_GAIN = 3.1;
+const MIN_PERSPECTIVE = 0.44;
+const MAX_PERSPECTIVE = 2.18;
 const RECOVERY_DEPTH_GAIN = 2.1;
 const MIN_RECOVERY_PERSPECTIVE = 0.65;
 const MAX_RECOVERY_PERSPECTIVE = 1.62;
-const HALO_SPRITE_SIZE = 256;
-const CORE_SPRITE_SIZE = 128;
 const MIN_GLOW_RADIUS = 32;
-const MAX_GLOW_RADIUS = 250;
 const MAX_RECOVERY_GLOW_RADIUS = 220;
-const TRAIL_POINT_CAPACITY = 24;
-const TRAIL_SAMPLE_INTERVAL = 1 / 24;
-const TRAIL_AXES = 3;
+const TRAIL_POINT_CAPACITY = 40;
+const TRAIL_SAMPLE_INTERVAL = 1 / 30;
+const TEXT_CONTENT = "HELLO WORLD !";
+const TEXT_DEPTH = 0.3;
+const MONUMENT_PITCH = -0.11;
+const MONUMENT_YAW = -0.14;
+const DESKTOP_REFLECTION_SIZE = 64;
+const CONSTRAINED_REFLECTION_SIZE = 64;
+const REFLECTION_MAX_ANGULAR_RADIUS = Math.PI / 24;
+const REFLECTION_NEAR_FADE_START = 0.1;
+const REFLECTION_NEAR_FADE_END = 0.42;
+const REFLECTION_HALO_OPACITY_SCALE = 0.45;
+const REFLECTION_CORE_OPACITY_SCALE = 0.7;
+const FAR_HALO_OPACITY = 0.46;
+const FAR_CORE_OPACITY = 0.58;
 
 const BODY_STYLES = Object.freeze([
     Object.freeze({
+        color: 0x52ddff,
+        trailOpacity: 0.52,
+        lightIntensity: 15,
         haloStops: Object.freeze([
             [0, "rgba(132, 241, 255, 0.78)"],
             [0.07, "rgba(91, 225, 255, 0.68)"],
@@ -46,11 +89,13 @@ const BODY_STYLES = Object.freeze([
             [0.34, "rgba(144, 239, 255, 0.72)"],
             [0.58, "rgba(66, 210, 255, 0.3)"],
             [0.8, "rgba(43, 173, 255, 0.08)"],
-            [1, "rgba(45, 184, 255, 0)"],
+            [1, "rgba(43, 173, 255, 0)"],
         ]),
-        trail: "rgb(74, 211, 255)",
     }),
     Object.freeze({
+        color: 0xa87cff,
+        trailOpacity: 0.56,
+        lightIntensity: 17,
         haloStops: Object.freeze([
             [0, "rgba(216, 190, 255, 0.78)"],
             [0.07, "rgba(188, 145, 255, 0.68)"],
@@ -67,11 +112,13 @@ const BODY_STYLES = Object.freeze([
             [0.34, "rgba(211, 180, 255, 0.72)"],
             [0.58, "rgba(159, 105, 255, 0.3)"],
             [0.8, "rgba(121, 77, 246, 0.08)"],
-            [1, "rgba(132, 82, 255, 0)"],
+            [1, "rgba(121, 77, 246, 0)"],
         ]),
-        trail: "rgb(174, 126, 255)",
     }),
     Object.freeze({
+        color: 0xffaa5c,
+        trailOpacity: 0.58,
+        lightIntensity: 18,
         haloStops: Object.freeze([
             [0, "rgba(255, 224, 166, 0.78)"],
             [0.07, "rgba(255, 196, 108, 0.68)"],
@@ -88,9 +135,8 @@ const BODY_STYLES = Object.freeze([
             [0.34, "rgba(255, 210, 149, 0.72)"],
             [0.58, "rgba(255, 146, 71, 0.3)"],
             [0.8, "rgba(238, 94, 42, 0.08)"],
-            [1, "rgba(255, 112, 50, 0)"],
+            [1, "rgba(238, 94, 42, 0)"],
         ]),
-        trail: "rgb(255, 166, 88)",
     }),
 ]);
 
@@ -137,103 +183,119 @@ function getDepthIntensity(
     minimum = MIN_PERSPECTIVE,
     maximum = MAX_PERSPECTIVE,
 ) {
-    return smoothstep(
-        (perspective - minimum) / (maximum - minimum),
-    );
+    return smoothstep((perspective - minimum) / (maximum - minimum));
 }
 
-function createRadialSprite(stops, cssSize, pixelRatio) {
-    const sprite = document.createElement("canvas");
-    const size = Math.round(cssSize * pixelRatio);
+function getVisualZ(positionZ) {
+    const perspective = getVisualPerspective(positionZ);
+    return CAMERA_DISTANCE - CAMERA_DISTANCE / perspective;
+}
+
+function createRadialTexture(stops) {
+    const canvas = document.createElement("canvas");
+    const size = 256;
     const center = size / 2;
+    const context = canvas.getContext("2d", { alpha: true });
 
-    sprite.width = size;
-    sprite.height = size;
-    const context = sprite.getContext("2d", { alpha: true });
+    canvas.width = size;
+    canvas.height = size;
 
-    if (!context) {
-        return sprite;
+    if (context) {
+        const gradient = context.createRadialGradient(
+            center,
+            center,
+            0,
+            center,
+            center,
+            center,
+        );
+
+        for (const [offset, color] of stops) {
+            gradient.addColorStop(offset, color);
+        }
+        context.fillStyle = gradient;
+        context.fillRect(0, 0, size, size);
     }
 
-    const gradient = context.createRadialGradient(
-        center,
-        center,
-        0,
-        center,
-        center,
-        center,
-    );
-
-    for (let stop = 0; stop < stops.length; stop += 1) {
-        gradient.addColorStop(stops[stop][0], stops[stop][1]);
-    }
-
-    context.fillStyle = gradient;
-    context.fillRect(0, 0, size, size);
-    return sprite;
+    const texture = new CanvasTexture(canvas);
+    texture.colorSpace = SRGBColorSpace;
+    texture.minFilter = LinearFilter;
+    texture.magFilter = LinearFilter;
+    return texture;
 }
 
-function createGlowSprites(style, pixelRatio) {
-    return {
-        halo: createRadialSprite(
-            style.haloStops,
-            HALO_SPRITE_SIZE,
-            pixelRatio,
-        ),
-        core: createRadialSprite(
-            style.coreStops,
-            CORE_SPRITE_SIZE,
-            pixelRatio,
-        ),
-    };
-}
-
-export class ThreeBodyBackground {
+export class MirrorMonumentScene {
     constructor(canvas) {
         if (!(canvas instanceof HTMLCanvasElement)) {
-            throw new TypeError("ThreeBodyBackground requires a canvas element.");
+            throw new TypeError("MirrorMonumentScene requires a canvas element.");
         }
 
         this.canvas = canvas;
-        this.context = canvas.getContext("2d", {
-            alpha: true,
-            desynchronized: true,
+        this.renderer = new WebGLRenderer({
+            canvas,
+            antialias: true,
+            alpha: false,
+            powerPreference: "high-performance",
+            precision: "highp",
         });
+        this.renderer.outputColorSpace = SRGBColorSpace;
+        this.renderer.toneMapping = ACESFilmicToneMapping;
+        this.renderer.toneMappingExposure = 1;
+        this.renderer.setClearColor(0x000000, 1);
+
+        this.scene = new Scene();
+        this.backgroundColor = new Color(0x000000);
+        this.reflectionBackground = new Color(0x000000);
+        this.scene.background = this.backgroundColor;
+        this.camera = new PerspectiveCamera(
+            CAMERA_FOV,
+            1,
+            0.05,
+            60,
+        );
+        this.camera.position.set(0, 0, CAMERA_DISTANCE);
+        this.camera.lookAt(0, 0, 0);
+
         this.system = new ThreeBodySystem();
         this.motionPreference = window.matchMedia("(prefers-reduced-motion: reduce)");
-
-        this.projectedX = new Float64Array(BODY_COUNT);
-        this.projectedY = new Float64Array(BODY_COUNT);
-        this.projectedDepth = new Float64Array(BODY_COUNT);
-        this.projectedRadius = new Float64Array(BODY_COUNT);
-        this.projectedDepthIntensity = new Float64Array(BODY_COUNT);
-        this.offscreenDuration = new Float64Array(BODY_COUNT);
-        this.recoveryStallDuration = new Float64Array(BODY_COUNT);
-        this.previousOffscreenOverflow = new Float64Array(BODY_COUNT);
-        this.trailPositions = new Float64Array(
-            BODY_COUNT * TRAIL_POINT_CAPACITY * TRAIL_AXES,
-        );
-        this.trailHeads = new Uint8Array(BODY_COUNT);
-        this.trailLengths = new Uint8Array(BODY_COUNT);
-        this.sprites = new Array(BODY_COUNT).fill(null);
+        this.bodyVisuals = [];
+        this.trailVisuals = [];
+        this.trailHistory = [];
+        this.mirrorMaterials = [];
+        this.spriteTextures = [];
+        this.textGeometry = null;
+        this.textMesh = null;
+        this.textLocalWidth = 1;
+        this.reflectionTarget = null;
+        this.cubeCamera = null;
+        this.reflectionSize = 0;
+        this.reflectionStride = 1;
+        this.reflectionFrame = 0;
+        this.reflectionUpdates = 0;
 
         this.cssWidth = 0;
         this.cssHeight = 0;
+        this.pixelRatio = 1;
+        this.pixelsPerWorldUnit = 1;
+        this.positionWorldScale = 1;
+        this.glowWorldDiameter = 1;
         this.positionScale = 1;
         this.glowScale = 1;
-        this.pixelRatio = 1;
-        this.spritePixelRatio = 0;
+        this.resizePending = true;
+
+        this.offscreenDuration = new Float64Array(BODY_COUNT);
+        this.recoveryStallDuration = new Float64Array(BODY_COUNT);
+        this.previousOffscreenOverflow = new Float64Array(BODY_COUNT);
         this.accumulator = 0;
         this.trailSampleAccumulator = 0;
         this.lastTimestamp = 0;
         this.animationFrameId = null;
         this.sceneOpacity = 1;
         this.transitionPhase = 0;
-        this.resizePending = true;
         this.started = false;
+        this.destroyed = false;
         this.manuallyPaused = false;
         this.pageSuspended = false;
-        this.destroyed = false;
 
         this._onAnimationFrame = this._onAnimationFrame.bind(this);
         this._onVisibilityChange = this._onVisibilityChange.bind(this);
@@ -241,11 +303,13 @@ export class ThreeBodyBackground {
         this._onPageShow = this._onPageShow.bind(this);
         this._onMotionPreferenceChange = this._onMotionPreferenceChange.bind(this);
         this._onFallbackResize = this._onFallbackResize.bind(this);
+        this._onContextLost = this._onContextLost.bind(this);
 
         document.addEventListener("visibilitychange", this._onVisibilityChange);
         window.addEventListener("pagehide", this._onPageHide);
         window.addEventListener("pageshow", this._onPageShow);
         this.motionPreference.addEventListener("change", this._onMotionPreferenceChange);
+        this.canvas.addEventListener("webglcontextlost", this._onContextLost);
 
         if ("ResizeObserver" in window) {
             this.resizeObserver = new ResizeObserver(() => {
@@ -258,34 +322,32 @@ export class ThreeBodyBackground {
         }
     }
 
-    start() {
+    async start() {
         if (this.destroyed || this.started) {
             return;
         }
 
-        this.started = true;
-        this._resizeCanvas();
-        this._clearTrails();
-        this._recordTrailPoint();
-        this._projectBodies();
+        this._resize();
+        this._createBodies();
+        await this._createMonument();
+        this._resetTrails();
+        this._updateBodyVisuals();
+        this._updateTrailGeometry();
+        this._updateDynamicReflection();
         this._render();
+
+        this.started = true;
+        this.canvas.dataset.renderingMode = "webgl-mirror";
+        document.body.classList.add("scene-ready");
         this._syncAnimationState();
     }
 
     pause() {
-        if (this.destroyed) {
-            return;
-        }
-
         this.manuallyPaused = true;
         this._syncAnimationState();
     }
 
     resume() {
-        if (this.destroyed) {
-            return;
-        }
-
         this.manuallyPaused = false;
         this._syncAnimationState();
     }
@@ -304,14 +366,262 @@ export class ThreeBodyBackground {
         window.removeEventListener("pageshow", this._onPageShow);
         window.removeEventListener("resize", this._onFallbackResize);
         this.motionPreference.removeEventListener("change", this._onMotionPreferenceChange);
+        this.canvas.removeEventListener("webglcontextlost", this._onContextLost);
 
         if (this.resizeObserver) {
             this.resizeObserver.disconnect();
         }
 
-        this.sprites.fill(null);
-        this.trailLengths.fill(0);
+        this.textGeometry?.dispose();
+        for (const texture of this.spriteTextures) {
+            texture.dispose();
+        }
+        this.reflectionTarget?.dispose();
+
+        for (const material of this.mirrorMaterials) {
+            material.dispose();
+        }
+        for (const visual of this.bodyVisuals) {
+            visual.core.material.dispose();
+            visual.halo.material.dispose();
+            visual.reflectionCore.material.dispose();
+            visual.reflectionHalo.material.dispose();
+        }
+        for (const visual of this.trailVisuals) {
+            visual.geometry.dispose();
+            visual.material.dispose();
+        }
+        this.renderer.dispose();
         this.canvas.dataset.simulationState = "destroyed";
+    }
+
+    _createBodies() {
+        for (let body = 0; body < BODY_COUNT; body += 1) {
+            const style = BODY_STYLES[body];
+            const group = new Object3D();
+            const haloTexture = createRadialTexture(style.haloStops);
+            const coreTexture = createRadialTexture(style.coreStops);
+            const halo = new Sprite(
+                new SpriteMaterial({
+                    map: haloTexture,
+                    transparent: true,
+                    opacity: 0.82,
+                    blending: AdditiveBlending,
+                    depthTest: true,
+                    depthWrite: false,
+                    toneMapped: false,
+                }),
+            );
+            const core = new Sprite(
+                new SpriteMaterial({
+                    map: coreTexture,
+                    transparent: true,
+                    opacity: 0.9,
+                    blending: AdditiveBlending,
+                    depthTest: true,
+                    depthWrite: false,
+                    toneMapped: false,
+                }),
+            );
+            const reflectionHalo = new Sprite(
+                new SpriteMaterial({
+                    map: haloTexture,
+                    transparent: true,
+                    opacity: 0,
+                    blending: AdditiveBlending,
+                    depthTest: true,
+                    depthWrite: false,
+                    toneMapped: false,
+                }),
+            );
+            const reflectionCore = new Sprite(
+                new SpriteMaterial({
+                    map: coreTexture,
+                    transparent: true,
+                    opacity: 0,
+                    blending: AdditiveBlending,
+                    depthTest: true,
+                    depthWrite: false,
+                    toneMapped: false,
+                }),
+            );
+            reflectionHalo.visible = false;
+            reflectionCore.visible = false;
+            const pointLight = new PointLight(
+                style.color,
+                style.lightIntensity,
+                // No cutoff: the constant-power emitter follows inverse-square
+                // falloff all the way into the distance.
+                0,
+                2,
+            );
+
+            group.add(halo, core, reflectionHalo, reflectionCore, pointLight);
+            this.scene.add(group);
+            this.bodyVisuals.push({
+                group,
+                core,
+                halo,
+                reflectionCore,
+                reflectionHalo,
+                pointLight,
+            });
+            this.spriteTextures.push(haloTexture, coreTexture);
+
+            const trailPositions = new Float32Array(TRAIL_POINT_CAPACITY * AXIS_COUNT);
+            const trailColors = new Float32Array(TRAIL_POINT_CAPACITY * AXIS_COUNT);
+            const trailGeometry = new BufferGeometry();
+            const positionAttribute = new BufferAttribute(trailPositions, AXIS_COUNT);
+            const colorAttribute = new BufferAttribute(trailColors, AXIS_COUNT);
+            const trailColor = new Color(style.color);
+
+            positionAttribute.setUsage(DynamicDrawUsage);
+
+            for (let point = 0; point < TRAIL_POINT_CAPACITY; point += 1) {
+                const progress = point / (TRAIL_POINT_CAPACITY - 1);
+                const intensity = 0.015 + 0.985 * progress * progress;
+                const offset = point * AXIS_COUNT;
+
+                trailColors[offset] = trailColor.r * intensity;
+                trailColors[offset + 1] = trailColor.g * intensity;
+                trailColors[offset + 2] = trailColor.b * intensity;
+            }
+
+            trailGeometry.setAttribute("position", positionAttribute);
+            trailGeometry.setAttribute("color", colorAttribute);
+            const trailMaterial = new LineBasicMaterial({
+                vertexColors: true,
+                transparent: true,
+                opacity: style.trailOpacity,
+                blending: AdditiveBlending,
+                depthTest: true,
+                depthWrite: false,
+                toneMapped: false,
+            });
+            const trailLine = new Line(trailGeometry, trailMaterial);
+
+            trailLine.frustumCulled = false;
+            this.scene.add(trailLine);
+            this.trailVisuals.push({
+                line: trailLine,
+                geometry: trailGeometry,
+                material: trailMaterial,
+                positionAttribute,
+            });
+            this.trailHistory.push(
+                new Float64Array(TRAIL_POINT_CAPACITY * AXIS_COUNT),
+            );
+        }
+    }
+
+    async _createMonument() {
+        const fontUrl = new URL(
+            "./assets/helvetiker_bold.typeface.json",
+            import.meta.url,
+        );
+        const font = await new FontLoader().loadAsync(fontUrl.href);
+        const geometry = new TextGeometry(TEXT_CONTENT, {
+            font,
+            size: 1,
+            depth: TEXT_DEPTH,
+            curveSegments: 10,
+            steps: 1,
+            bevelEnabled: true,
+            bevelThickness: 0.055,
+            bevelSize: 0.028,
+            bevelOffset: 0,
+            bevelSegments: 4,
+        });
+
+        geometry.computeBoundingBox();
+        const bounds = geometry.boundingBox;
+
+        if (!bounds) {
+            throw new Error("Unable to measure the monument text geometry.");
+        }
+
+        const centerX = (bounds.min.x + bounds.max.x) / 2;
+        const centerY = (bounds.min.y + bounds.max.y) / 2;
+        const centerZ = (bounds.min.z + bounds.max.z) / 2;
+
+        geometry.translate(-centerX, -centerY, -centerZ);
+        geometry.computeVertexNormals();
+        geometry.computeBoundingBox();
+
+        this.textLocalWidth = bounds.max.x - bounds.min.x;
+        this.textGeometry = geometry;
+
+        const frontMaterial = new MeshPhysicalMaterial({
+            color: 0xf4f5f7,
+            metalness: 1,
+            roughness: 0.008,
+            clearcoat: 1,
+            clearcoatRoughness: 0.006,
+            envMapIntensity: 1.35,
+        });
+        const sideMaterial = new MeshPhysicalMaterial({
+            color: 0xb5bac2,
+            metalness: 1,
+            roughness: 0.02,
+            clearcoat: 1,
+            clearcoatRoughness: 0.012,
+            envMapIntensity: 1.2,
+        });
+
+        this.mirrorMaterials = [frontMaterial, sideMaterial];
+        this.textMesh = new Mesh(geometry, this.mirrorMaterials);
+        this.textMesh.position.z = 0;
+        this.textMesh.rotation.set(MONUMENT_PITCH, MONUMENT_YAW, 0);
+        this.scene.add(this.textMesh);
+        this._resizeMonument();
+        this._ensureReflectionTarget();
+    }
+
+    _ensureReflectionTarget() {
+        const isConstrained =
+            this.cssWidth < 720
+            || (Number.isFinite(navigator.deviceMemory) && navigator.deviceMemory <= 4);
+        const desiredSize = isConstrained
+            ? CONSTRAINED_REFLECTION_SIZE
+            : DESKTOP_REFLECTION_SIZE;
+
+        this.reflectionStride = isConstrained ? 2 : 1;
+
+        if (this.reflectionTarget && desiredSize === this.reflectionSize) {
+            for (const material of this.mirrorMaterials) {
+                if (material.envMap !== this.reflectionTarget.texture) {
+                    material.envMap = this.reflectionTarget.texture;
+                    material.needsUpdate = true;
+                }
+            }
+            return;
+        }
+
+        const previousTarget = this.reflectionTarget;
+        const target = new WebGLCubeRenderTarget(desiredSize, {
+            generateMipmaps: true,
+            minFilter: LinearMipmapLinearFilter,
+            magFilter: LinearFilter,
+            depthBuffer: true,
+        });
+
+        this.reflectionTarget = target;
+        this.reflectionSize = desiredSize;
+
+        if (!this.cubeCamera) {
+            this.cubeCamera = new CubeCamera(0.08, 40, target);
+            this.cubeCamera.position.set(0, 0, 0.06);
+            this.scene.add(this.cubeCamera);
+        } else {
+            this.cubeCamera.renderTarget = target;
+        }
+
+        for (const material of this.mirrorMaterials) {
+            material.envMap = target.texture;
+            material.needsUpdate = true;
+        }
+
+        previousTarget?.dispose();
     }
 
     _requestResize() {
@@ -321,55 +631,66 @@ export class ThreeBodyBackground {
 
         this.resizePending = true;
 
-        if (this.animationFrameId === null) {
-            this._resizeCanvas();
-            this._projectBodies();
+        if (this.animationFrameId === null && this.started) {
+            this._resize();
+            this._updateBodyVisuals();
+            this._updateTrailGeometry();
+            this._updateDynamicReflection();
             this._render();
         }
     }
 
-    _resizeCanvas() {
-        const width = Math.max(1, document.documentElement.clientWidth || window.innerWidth);
-        const height = Math.max(1, window.innerHeight || document.documentElement.clientHeight);
-        const dimensionsChanged = width !== this.cssWidth || height !== this.cssHeight;
+    _resize() {
+        const width = Math.max(
+            1,
+            document.documentElement.clientWidth || window.innerWidth,
+        );
+        const height = Math.max(
+            1,
+            window.innerHeight || document.documentElement.clientHeight,
+        );
         const devicePixelRatio = window.devicePixelRatio || 1;
-        const isConstrainedDevice =
+        const isConstrained =
             width < 720
             || (Number.isFinite(navigator.deviceMemory) && navigator.deviceMemory <= 4);
-        const maximumPixelRatio = isConstrainedDevice ? 1.5 : 2;
+        const maximumPixelRatio = isConstrained ? 1.2 : 1.5;
         const pixelRatio = Math.min(devicePixelRatio, maximumPixelRatio);
-        const backingWidth = Math.max(1, Math.round(width * pixelRatio));
-        const backingHeight = Math.max(1, Math.round(height * pixelRatio));
+        const verticalWorldSpan =
+            2
+            * Math.tan((CAMERA_FOV * Math.PI) / 360)
+            * CAMERA_DISTANCE;
 
         this.cssWidth = width;
         this.cssHeight = height;
+        this.pixelRatio = pixelRatio;
+        this.pixelsPerWorldUnit = height / verticalWorldSpan;
         this.positionScale = getPositionScale(width, height);
         this.glowScale = getGlowScale(width, height);
-        this.pixelRatio = pixelRatio;
+        this.positionWorldScale = this.positionScale / this.pixelsPerWorldUnit;
+        this.glowWorldDiameter =
+            (this.glowScale * 1.1) / this.pixelsPerWorldUnit;
         this.resizePending = false;
 
-        if (dimensionsChanged) {
-            this._resetRecoveryTracking();
+        this.renderer.setPixelRatio(pixelRatio);
+        this.renderer.setSize(width, height, false);
+        this.camera.aspect = width / height;
+        this.camera.updateProjectionMatrix();
+        this._resizeMonument();
+        this._ensureReflectionTarget();
+        this._resetRecoveryTracking();
+    }
+
+    _resizeMonument() {
+        if (!this.textMesh || this.textLocalWidth <= 0 || this.cssWidth <= 0) {
+            return;
         }
 
-        if (this.canvas.width !== backingWidth || this.canvas.height !== backingHeight) {
-            this.canvas.width = backingWidth;
-            this.canvas.height = backingHeight;
-        }
+        const widthRatio = this.cssWidth < 600 ? 0.9 : 0.67;
+        const desiredPixelWidth = Math.min(this.cssWidth * widthRatio, 1120);
+        const desiredWorldWidth = desiredPixelWidth / this.pixelsPerWorldUnit;
+        const scale = desiredWorldWidth / this.textLocalWidth;
 
-        if (this.context) {
-            this.context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-        }
-
-        if (this.spritePixelRatio !== pixelRatio) {
-            for (let body = 0; body < BODY_COUNT; body += 1) {
-                this.sprites[body] = createGlowSprites(
-                    BODY_STYLES[body],
-                    pixelRatio,
-                );
-            }
-            this.spritePixelRatio = pixelRatio;
-        }
+        this.textMesh.scale.setScalar(scale);
     }
 
     _syncAnimationState() {
@@ -400,8 +721,10 @@ export class ThreeBodyBackground {
             this.canvas.dataset.simulationState = "paused";
         }
 
-        if (!document.hidden && !this.pageSuspended) {
-            this._projectBodies();
+        if (!document.hidden && !this.pageSuspended && this.started) {
+            this._updateBodyVisuals();
+            this._updateTrailGeometry();
+            this._updateDynamicReflection();
             this._render();
         }
     }
@@ -433,13 +756,16 @@ export class ThreeBodyBackground {
         }
 
         if (this.resizePending) {
-            this._resizeCanvas();
+            this._resize();
         }
 
         let frameDelta = 0;
 
         if (this.lastTimestamp > 0) {
-            frameDelta = Math.min((timestamp - this.lastTimestamp) / 1000, MAX_FRAME_DELTA);
+            frameDelta = Math.min(
+                (timestamp - this.lastTimestamp) / 1000,
+                MAX_FRAME_DELTA,
+            );
         }
 
         this.lastTimestamp = timestamp;
@@ -462,16 +788,21 @@ export class ThreeBodyBackground {
             this.sceneOpacity = 0;
             this.transitionPhase = 2;
             this._resetRecoveryTracking();
-            this._clearTrails();
-            this._recordTrailPoint();
+            this._resetTrails();
         }
 
         this._advanceResetTransition(frameDelta);
         this._updateTrails(frameDelta);
-        this._projectBodies();
+        this._updateBodyVisuals();
+        this._updateTrailGeometry();
         this._updateOffscreenRecovery(frameDelta);
-        this._render();
 
+        this.reflectionFrame += 1;
+        if (this.reflectionFrame % this.reflectionStride === 0) {
+            this._updateDynamicReflection();
+        }
+
+        this._render();
         this.animationFrameId = requestAnimationFrame(this._onAnimationFrame);
     }
 
@@ -482,8 +813,7 @@ export class ThreeBodyBackground {
             if (this.sceneOpacity === 0) {
                 this.system.reset();
                 this._resetRecoveryTracking();
-                this._clearTrails();
-                this._recordTrailPoint();
+                this._resetTrails();
                 this.transitionPhase = 2;
             }
         } else if (this.transitionPhase === 2) {
@@ -493,38 +823,80 @@ export class ThreeBodyBackground {
                 this.transitionPhase = 0;
             }
         }
+
+        this.canvas.style.opacity = String(this.sceneOpacity);
     }
 
-    _projectBodies() {
+    _updateBodyVisuals() {
         const positions = this.system.positions;
-        const centerX = this.cssWidth / 2;
-        const centerY = this.cssHeight / 2;
 
         for (let body = 0; body < BODY_COUNT; body += 1) {
-            const offset = body * 3;
-            const positionX = positions[offset];
-            const positionY = positions[offset + 1];
+            const offset = body * AXIS_COUNT;
             const positionZ = positions[offset + 2];
             const perspective = getVisualPerspective(positionZ);
             const depthIntensity = getDepthIntensity(perspective);
+            const diameter =
+                this.glowWorldDiameter * (0.58 + 0.82 * depthIntensity);
+            const visual = this.bodyVisuals[body];
 
-            this.projectedX[body] = centerX + positionX * this.positionScale * perspective;
-            this.projectedY[body] = centerY - positionY * this.positionScale * perspective;
-            this.projectedDepth[body] = positionZ;
-            this.projectedRadius[body] = clamp(
-                this.glowScale
-                * 0.55
-                * perspective
-                * (0.82 + 0.38 * depthIntensity),
-                MIN_GLOW_RADIUS,
-                MAX_GLOW_RADIUS,
+            visual.group.position.set(
+                positions[offset] * this.positionWorldScale,
+                positions[offset + 1] * this.positionWorldScale,
+                getVisualZ(positionZ),
             );
-            this.projectedDepthIntensity[body] = depthIntensity;
+            visual.halo.scale.set(diameter, diameter, 1);
+            visual.halo.material.opacity =
+                FAR_HALO_OPACITY + (0.95 - FAR_HALO_OPACITY) * depthIntensity;
+            const coreDiameter = diameter * (0.27 + 0.12 * depthIntensity);
+            visual.core.scale.set(coreDiameter, coreDiameter, 1);
+            visual.core.material.opacity =
+                FAR_CORE_OPACITY + (1 - FAR_CORE_OPACITY) * depthIntensity;
+
+            const reflectionDistance = this.cubeCamera
+                ? visual.group.position.distanceTo(this.cubeCamera.position)
+                : Number.POSITIVE_INFINITY;
+            const maximumReflectionDiameter = Number.isFinite(reflectionDistance)
+                ? 2
+                    * reflectionDistance
+                    * Math.tan(REFLECTION_MAX_ANGULAR_RADIUS)
+                : diameter;
+            const reflectionDiameter = Math.min(
+                diameter,
+                maximumReflectionDiameter,
+            );
+            const reflectionNearFade = Number.isFinite(reflectionDistance)
+                ? smoothstep(
+                    (reflectionDistance - REFLECTION_NEAR_FADE_START)
+                    / (REFLECTION_NEAR_FADE_END - REFLECTION_NEAR_FADE_START),
+                )
+                : 1;
+
+            visual.reflectionHalo.scale.set(
+                reflectionDiameter,
+                reflectionDiameter,
+                1,
+            );
+            visual.reflectionHalo.material.opacity =
+                visual.halo.material.opacity
+                * REFLECTION_HALO_OPACITY_SCALE
+                * reflectionNearFade;
+            const reflectionCoreDiameter =
+                reflectionDiameter * (0.27 + 0.12 * depthIntensity);
+            visual.reflectionCore.scale.set(
+                reflectionCoreDiameter,
+                reflectionCoreDiameter,
+                1,
+            );
+            visual.reflectionCore.material.opacity =
+                visual.core.material.opacity
+                * REFLECTION_CORE_OPACITY_SCALE
+                * reflectionNearFade;
+            visual.pointLight.intensity = BODY_STYLES[body].lightIntensity;
         }
     }
 
     _updateTrails(frameDelta) {
-        if (frameDelta <= 0 || this.motionPreference.matches) {
+        if (frameDelta <= 0) {
             return;
         }
 
@@ -536,30 +908,98 @@ export class ThreeBodyBackground {
         }
     }
 
+    _resetTrails() {
+        const positions = this.system.positions;
+
+        for (let body = 0; body < BODY_COUNT; body += 1) {
+            const history = this.trailHistory[body];
+            const positionOffset = body * AXIS_COUNT;
+
+            for (let point = 0; point < TRAIL_POINT_CAPACITY; point += 1) {
+                const trailOffset = point * AXIS_COUNT;
+                history[trailOffset] = positions[positionOffset];
+                history[trailOffset + 1] = positions[positionOffset + 1];
+                history[trailOffset + 2] = positions[positionOffset + 2];
+            }
+        }
+
+        this.trailSampleAccumulator = 0;
+        this._updateTrailGeometry();
+    }
+
     _recordTrailPoint() {
         const positions = this.system.positions;
 
         for (let body = 0; body < BODY_COUNT; body += 1) {
-            const trailPoint = this.trailHeads[body];
-            const trailOffset =
-                (body * TRAIL_POINT_CAPACITY + trailPoint) * TRAIL_AXES;
-            const positionOffset = body * TRAIL_AXES;
+            const history = this.trailHistory[body];
+            const positionOffset = body * AXIS_COUNT;
+            const newestOffset = history.length - AXIS_COUNT;
 
-            this.trailPositions[trailOffset] = positions[positionOffset];
-            this.trailPositions[trailOffset + 1] = positions[positionOffset + 1];
-            this.trailPositions[trailOffset + 2] = positions[positionOffset + 2];
-            this.trailHeads[body] = (trailPoint + 1) % TRAIL_POINT_CAPACITY;
-            this.trailLengths[body] = Math.min(
-                TRAIL_POINT_CAPACITY,
-                this.trailLengths[body] + 1,
-            );
+            history.copyWithin(0, AXIS_COUNT);
+            history[newestOffset] = positions[positionOffset];
+            history[newestOffset + 1] = positions[positionOffset + 1];
+            history[newestOffset + 2] = positions[positionOffset + 2];
         }
     }
 
-    _clearTrails() {
-        this.trailHeads.fill(0);
-        this.trailLengths.fill(0);
-        this.trailSampleAccumulator = 0;
+    _updateTrailGeometry() {
+        for (let body = 0; body < BODY_COUNT; body += 1) {
+            const history = this.trailHistory[body];
+            const attribute = this.trailVisuals[body].positionAttribute;
+            const output = attribute.array;
+
+            for (let point = 0; point < TRAIL_POINT_CAPACITY; point += 1) {
+                const offset = point * AXIS_COUNT;
+
+                output[offset] = history[offset] * this.positionWorldScale;
+                output[offset + 1] = history[offset + 1] * this.positionWorldScale;
+                output[offset + 2] = getVisualZ(history[offset + 2]);
+            }
+
+            attribute.needsUpdate = true;
+            this.trailVisuals[body].geometry.computeBoundingSphere();
+        }
+    }
+
+    _updateDynamicReflection() {
+        if (!this.textMesh || !this.cubeCamera || !this.reflectionTarget) {
+            return;
+        }
+
+        const mainBackground = this.scene.background;
+        this.textMesh.visible = false;
+        this.scene.background = this.reflectionBackground;
+
+        for (const visual of this.bodyVisuals) {
+            visual.halo.visible = false;
+            visual.core.visible = false;
+            visual.reflectionHalo.visible =
+                visual.reflectionHalo.material.opacity > 0;
+            visual.reflectionCore.visible =
+                visual.reflectionCore.material.opacity > 0;
+        }
+
+        try {
+            this.cubeCamera.update(this.renderer, this.scene);
+        } finally {
+            this.scene.background = mainBackground;
+            this.textMesh.visible = true;
+
+            for (const visual of this.bodyVisuals) {
+                visual.halo.visible = true;
+                visual.core.visible = true;
+                visual.reflectionHalo.visible = false;
+                visual.reflectionCore.visible = false;
+            }
+        }
+
+        this.reflectionUpdates += 1;
+        this.canvas.dataset.reflectionUpdates = String(this.reflectionUpdates);
+    }
+
+    _render() {
+        this.renderer.setRenderTarget(null);
+        this.renderer.render(this.scene, this.camera);
     }
 
     _resetRecoveryTracking() {
@@ -579,7 +1019,7 @@ export class ThreeBodyBackground {
         const centerY = this.cssHeight / 2;
 
         for (let body = 0; body < BODY_COUNT; body += 1) {
-            const offset = body * 3;
+            const offset = body * AXIS_COUNT;
             const perspective = getRecoveryPerspective(positions[offset + 2]);
             const depthIntensity = getDepthIntensity(
                 perspective,
@@ -592,17 +1032,16 @@ export class ThreeBodyBackground {
                 centerY - positions[offset + 1] * this.positionScale * perspective;
             const recoveryRadius = clamp(
                 this.glowScale
-                * 0.54
-                * perspective
-                * (0.86 + 0.3 * depthIntensity),
+                    * 0.54
+                    * perspective
+                    * (0.86 + 0.3 * depthIntensity),
                 MIN_GLOW_RADIUS,
                 MAX_RECOVERY_GLOW_RADIUS,
             );
-            const coreRadius = recoveryRadius * 0.16;
             const overflow = getOffscreenOverflow(
                 projectedX,
                 projectedY,
-                coreRadius,
+                recoveryRadius * 0.16,
                 this.cssWidth,
                 this.cssHeight,
                 margin,
@@ -615,6 +1054,7 @@ export class ThreeBodyBackground {
                 overflow,
                 frameDelta,
             );
+
             this.system.setRecoveryUrgency(body, urgency);
 
             if (
@@ -624,133 +1064,6 @@ export class ThreeBodyBackground {
                 this.transitionPhase = 1;
             }
         }
-    }
-
-    _render() {
-        if (!this.context || this.cssWidth <= 0 || this.cssHeight <= 0) {
-            return;
-        }
-
-        const context = this.context;
-        context.setTransform(this.pixelRatio, 0, 0, this.pixelRatio, 0, 0);
-        context.clearRect(0, 0, this.cssWidth, this.cssHeight);
-        context.globalCompositeOperation = "lighter";
-
-        let first = 0;
-        let second = 1;
-        let third = 2;
-        let temporary;
-
-        if (this.projectedDepth[first] > this.projectedDepth[second]) {
-            temporary = first;
-            first = second;
-            second = temporary;
-        }
-        if (this.projectedDepth[second] > this.projectedDepth[third]) {
-            temporary = second;
-            second = third;
-            third = temporary;
-        }
-        if (this.projectedDepth[first] > this.projectedDepth[second]) {
-            temporary = first;
-            first = second;
-            second = temporary;
-        }
-
-        this._drawTrail(first);
-        this._drawTrail(second);
-        this._drawTrail(third);
-        this._drawBody(first);
-        this._drawBody(second);
-        this._drawBody(third);
-
-        context.globalAlpha = 1;
-        context.globalCompositeOperation = "source-over";
-    }
-
-    _drawTrail(body) {
-        const trailLength = this.trailLengths[body];
-
-        if (trailLength < 2) {
-            return;
-        }
-
-        const context = this.context;
-        const centerX = this.cssWidth / 2;
-        const centerY = this.cssHeight / 2;
-        const oldestPoint =
-            (this.trailHeads[body] - trailLength + TRAIL_POINT_CAPACITY)
-            % TRAIL_POINT_CAPACITY;
-        let previousX = 0;
-        let previousY = 0;
-
-        context.strokeStyle = BODY_STYLES[body].trail;
-        context.lineCap = "round";
-
-        for (let point = 0; point < trailLength; point += 1) {
-            const trailPoint = (oldestPoint + point) % TRAIL_POINT_CAPACITY;
-            const trailOffset =
-                (body * TRAIL_POINT_CAPACITY + trailPoint) * TRAIL_AXES;
-            const positionX = this.trailPositions[trailOffset];
-            const positionY = this.trailPositions[trailOffset + 1];
-            const positionZ = this.trailPositions[trailOffset + 2];
-            const perspective = getVisualPerspective(positionZ);
-            const depthIntensity = getDepthIntensity(perspective);
-            const projectedX = centerX + positionX * this.positionScale * perspective;
-            const projectedY = centerY - positionY * this.positionScale * perspective;
-
-            if (point > 0) {
-                const ageProgress = point / (trailLength - 1);
-                const fade = ageProgress * ageProgress;
-                context.globalAlpha =
-                    this.sceneOpacity
-                    * (0.035 + 0.265 * fade)
-                    * (0.25 + 0.75 * depthIntensity);
-                context.lineWidth =
-                    (0.55 + 3.3 * depthIntensity)
-                    * (0.45 + 0.55 * ageProgress);
-                context.beginPath();
-                context.moveTo(previousX, previousY);
-                context.lineTo(projectedX, projectedY);
-                context.stroke();
-            }
-
-            previousX = projectedX;
-            previousY = projectedY;
-        }
-    }
-
-    _drawBody(body) {
-        const sprites = this.sprites[body];
-
-        if (!sprites) {
-            return;
-        }
-
-        const radius = this.projectedRadius[body];
-        const depthIntensity = this.projectedDepthIntensity[body];
-        const haloAlpha = 0.32 + 0.63 * depthIntensity;
-
-        this.context.globalAlpha = haloAlpha * this.sceneOpacity;
-        this.context.drawImage(
-            sprites.halo,
-            this.projectedX[body] - radius,
-            this.projectedY[body] - radius,
-            radius * 2,
-            radius * 2,
-        );
-
-        const coreRadius = radius * (0.27 + 0.12 * depthIntensity);
-        const coreAlpha = 0.4 + 0.6 * depthIntensity;
-
-        this.context.globalAlpha = coreAlpha * this.sceneOpacity;
-        this.context.drawImage(
-            sprites.core,
-            this.projectedX[body] - coreRadius,
-            this.projectedY[body] - coreRadius,
-            coreRadius * 2,
-            coreRadius * 2,
-        );
     }
 
     _onVisibilityChange() {
@@ -772,22 +1085,36 @@ export class ThreeBodyBackground {
     }
 
     _onMotionPreferenceChange() {
-        if (this.motionPreference.matches) {
-            this._clearTrails();
-            this._recordTrailPoint();
-        }
-
         this._syncAnimationState();
     }
 
     _onFallbackResize() {
         this._requestResize();
     }
+
+    _onContextLost(event) {
+        event.preventDefault();
+        this.pause();
+        this.canvas.dataset.simulationState = "context-lost";
+    }
 }
 
 const canvas = document.querySelector("[data-three-body]");
 
 if (canvas) {
-    const background = new ThreeBodyBackground(canvas);
-    background.start();
+    try {
+        const monument = new MirrorMonumentScene(canvas);
+
+        monument.start().catch((error) => {
+            console.error("Unable to start the mirror monument scene.", error);
+            monument.destroy();
+            document.body.classList.remove("scene-ready");
+            document.body.classList.add("scene-failed");
+            canvas.dataset.simulationState = "failed";
+        });
+    } catch (error) {
+        console.error("WebGL mirror monument is unavailable.", error);
+        document.body.classList.add("scene-failed");
+        canvas.dataset.simulationState = "failed";
+    }
 }

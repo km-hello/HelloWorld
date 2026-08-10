@@ -3,7 +3,7 @@
     font-family:
         Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
         "Segoe UI", sans-serif;
-    background-color: #060816;
+    background-color: #000;
 }
 
 *,
@@ -25,22 +25,23 @@ body {
     min-height: 100vh;
     min-height: 100svh;
     color: #f8fbff;
-    background: #060816;
+    background: #000;
 }
 
-.three-body-canvas {
+.cosmic-scene {
     position: fixed;
-    z-index: 1;
+    z-index: 0;
     inset: 0;
     display: block;
     width: 100%;
     height: 100%;
     pointer-events: none;
+    touch-action: none;
 }
 
 .container {
     position: relative;
-    z-index: 0;
+    z-index: 1;
     display: grid;
     width: 100%;
     min-height: 100vh;
@@ -52,21 +53,49 @@ body {
 
 .hello {
     margin: 0;
-    color: rgb(239, 244, 255);
+    color: rgb(214, 222, 235);
     font-family:
         "Avenir Next", "SF Pro Display", "Segoe UI Variable Display",
         "Segoe UI", ui-sans-serif, system-ui, sans-serif;
     font-size: clamp(2.75rem, 7vw, 6.5rem);
-    font-weight: 320;
-    letter-spacing: -0.04em;
+    font-weight: 700;
+    letter-spacing: -0.045em;
     line-height: 1;
-    opacity: 0.75;
+    opacity: 1;
     text-align: center;
     white-space: nowrap;
     -webkit-font-smoothing: antialiased;
     text-shadow:
-        0 1px 1px rgba(255, 255, 255, 0.04),
-        0 0.5rem 2rem rgba(1, 3, 14, 0.22);
+        0 1px 0 rgba(255, 255, 255, 0.3),
+        0 0.45rem 1.4rem rgba(0, 0, 0, 0.58);
+    transition: opacity 220ms ease;
+}
+
+.scene-ready .container {
+    position: absolute;
+    width: 1px;
+    min-height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+.scene-ready .hello {
+    opacity: 0;
+}
+
+.scene-failed .cosmic-scene {
+    display: none;
+}
+
+.noscript-message {
+    position: fixed;
+    z-index: 2;
+    right: 1rem;
+    bottom: 1rem;
+    color: rgba(239, 244, 255, 0.72);
+    font-size: 0.75rem;
 }
 
 @media (max-width: 420px) {
@@ -76,7 +105,7 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .three-body-canvas {
-        opacity: 0.86;
+    .cosmic-scene {
+        opacity: 0.92;
     }
 }
