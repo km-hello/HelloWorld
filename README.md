@@ -46,7 +46,7 @@ npm test
 
 ## 物理实现
 
-- `physics.js` 使用固定 `1/120s` 步长的 Velocity Verlet 积分计算三维引力。
+- `src/simulation/physics.js` 使用固定 `1/120s` 步长的 Velocity Verlet 积分计算三维引力。
 - 三条可见轨迹以 `30Hz` 直接采样同一组物理位置；渲染代码不改写位置或速度，只在输出时进行世界缩放和 Z 轴视觉映射。
 - 默认初态保持零总动量；有限尺寸排斥核避免极近距离三球重合，同时保留掠过和引力弹弓。
 - 核心活动区以三体引力为主，软边界只在物体离开主要活动范围后逐步介入。
@@ -54,4 +54,4 @@ npm test
 - 离屏保护根据持续时间、运动方向和返回进度渐进触发，正常回程不会被突然重置。
 - 因为包含软化、有限尺寸排斥核、软边界、离屏回拉、速度上限和持久双星再交互控制，这是一套面向长时间视觉稳定性的三体模型，并非完全孤立、无限空间中的点质量牛顿系统。关闭这些保护后的经典八字轨道回归测试会单独验证积分器的能量、动量与质心稳定性。
 
-主要物理参数集中在 `physics.js` 的 `DEFAULT_PHYSICS_CONFIG`；视口缩放与离屏进度跟踪位于 `viewport.js`；相机、视觉纵深、镜面反射和渲染生命周期参数位于 `app.js`。
+主要物理参数集中在 `src/simulation/physics.js` 的 `DEFAULT_PHYSICS_CONFIG`；视口缩放与离屏进度跟踪位于 `src/scene/viewport.js`；场景生命周期、光球轨迹和镜面纪念碑分别位于 `src/scene/mirror-monument-scene.js`、`src/scene/body-visuals.js` 和 `src/scene/mirror-monument.js`。
