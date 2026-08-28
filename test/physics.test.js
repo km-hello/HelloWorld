@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ThreeBodySystem } from "../physics.js";
+import { ThreeBodySystem } from "../src/simulation/physics.js";
 
 const FIXED_STEP = 1 / 120;
 

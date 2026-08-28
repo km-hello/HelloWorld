@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ThreeBodySystem } from "../physics.js";
+import { ThreeBodySystem } from "../src/simulation/physics.js";
 import {
     getGlowScale,
     getNearCameraFade,
@@ -12,7 +12,7 @@ import {
     MAX_RECOVERY_STALL_DURATION,
     updateRecoveryTracking,
     VISUAL_CAMERA_POSITION_Z,
-} from "../viewport.js";
+} from "../src/scene/viewport.js";
 
 const FIXED_STEP = 1 / 120;
 const FRAME_STEP = 1 / 60;
